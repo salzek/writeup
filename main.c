@@ -10,7 +10,7 @@ PROCESS_INFORMATION pi;
 void main() {
 	// Image'i alinacak dosya
 	HANDLE HFile = CreateFileA(
-		"C:\\Users\\Salihimar\\source\\repos\\PE_Hollowing\\Debug\\messageBox.exe",
+		"C:\\Users\\salzE\\Desktop\\Injections\\test\\test.exe",
 		GENERIC_READ,
 		0,
 		NULL,
@@ -19,13 +19,13 @@ void main() {
 		NULL);
 
 	if (HFile == INVALID_HANDLE_VALUE) {
-		printf("Dosya açýlamadý!");
+		printf("Dosya acilamadi!");
 		exit(EXIT_FAILURE);
 	}
 
 	DWORD fileSize = GetFileSize(HFile, NULL);
 
-	if ( fileSize == INVALID_FILE_SIZE)
+	if (fileSize == INVALID_FILE_SIZE)
 	{
 		printf("Dosya okunamadi!");
 		exit(EXIT_FAILURE);
@@ -62,11 +62,11 @@ void main() {
 
 	if (CreateProcessA(
 		NULL,
-		"calc.exe",
+		"c:\\windows\\syswow64\\notepad.exe",
 		NULL,
 		NULL,
 		TRUE,
-		0,
+		4,
 		NULL,
 		NULL,
 		&si, &pi) == 0) {
@@ -77,5 +77,30 @@ void main() {
 	{
 		printf("pid number: %d", pi.dwProcessId);
 	};
-	while (1);
+	
+	typedef NTSTATUS(NTAPI* NtQueryInformationProcessPtr)(
+		IN HANDLE ProcessHandle,
+		IN PROCESSINFOCLASS ProcessInformationClass,
+		OUT PVOID ProcessInformation,
+		IN ULONG ProcessInformationLength,
+		OUT PULONG ReturnLength OPTIONAL);
+
+	PROCESS_BASIC_INFORMATION status;
+
+	HMODULE Hntdll = LoadLibraryA("ntdll.dll");
+
+	NtQueryInformationProcessPtr NtQueryInformationProcess = (NtQueryInformationProcessPtr)GetProcAddress(Hntdll, "NtQueryInformationProcess");
+	DWORD returnLenght = 0;
+	NtQueryInformationProcess(pi.hProcess, ProcessBasicInformation, &status, sizeof(PROCESS_BASIC_INFORMATION), &returnLenght);
+	printf("return lenght:%d\n", returnLenght);
+	DWORD pebImageBaseOffset = (DWORD)status.PebBaseAddress + 8;
+	printf("%d\n%d", (DWORD)status.PebBaseAddress, status.PebBaseAddress);
+	 
+	//printf("%d\n%d", pebImageBaseOffset, *((LPDWORD)status.PebBaseAddress + 8));
+	/*
+	LPVOID buff = 0;
+	SIZE_T bytesRead = NULL;
+	HANDLE destProcess = pi.hProcess;
+	ReadProcessMemory(destProcess, ((DWORD)status.PebBaseAddress + 8), &buff, 4, &bytesRead);
+	*/
 }
