@@ -4,202 +4,291 @@
 #include <winternl.h>
 #include <string.h>
 
-STARTUPINFOA si;
-PROCESS_INFORMATION pi;
+typedef NTSTATUS(NTAPI* PNtQueryInformationProcess)(
+	IN HANDLE ProcessHandle,
+	IN PROCESSINFOCLASS ProcessInformationClass,
+	OUT PVOID ProcessInformation,
+	IN ULONG ProcessInformationLength,
+	OUT PULONG ReturnLength OPTIONAL);
 
 
-void main() { //resume
-	// Image'i alinacak dosya
+
+typedef NTSTATUS(WINAPI* PNtUnmapViewOfSection)(
+	IN HANDLE ProcessHandle,
+	IN PVOID BaseAddress);
+
+void main() {
+	char file[] = "C:\\Windows\\SysWOW64\\calc.exe";
+
+	/*
+		Disk uzerinde depolanmis dosyaya ulasmak icin HANDLE degeri al.
+	*/
 	HANDLE HFile = CreateFileA(
-		"C:\\Windows\\syswow64\\calc.exe",
+		(LPCSTR)file,
 		GENERIC_READ,
-		0, //suspended
+		FILE_SHARE_READ,
 		NULL,
 		OPEN_EXISTING,
 		FILE_ATTRIBUTE_READONLY,
 		NULL);
 
-	if (HFile == INVALID_HANDLE_VALUE) {
+	if (HFile == INVALID_HANDLE_VALUE)
+	{
 		printf("Dosya acilamadi!");
 		exit(EXIT_FAILURE);
 	}
-
-	DWORD fileSize = GetFileSize(HFile, NULL);
+	/*
+		Dosya boyutunu al.
+	*/
+	DWORD fileSize = GetFileSize(
+		HFile, 
+		NULL);
 
 	if (fileSize == INVALID_FILE_SIZE)
 	{
-		printf("Dosya okunamadi!");
+		printf("Dosya boyutu alinamadi!");
 		exit(EXIT_FAILURE);
 	}
-	else
-	{
-		printf("Dosyadan %d byte okundu.\n", fileSize);
-	}
 
-	LPVOID allocatedMemAddr = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (SIZE_T)fileSize);
+	/*
+		Heap'den dosya boyutu kadar yer tahsis et ve bu alani sifirla doldur.
+	*/
+	LPVOID baseAddr = HeapAlloc(
+		GetProcessHeap(), 
+		HEAP_ZERO_MEMORY, 
+		fileSize);
 
-	if (allocatedMemAddr == NULL)
+	if (!baseAddr)
 	{
-		printf("Alan tahsis edilemedi!");
+		printf("Dosya icin Heap'den yer tahsis edilemedi!");
 		exit(EXIT_FAILURE);
 	}
-	else
-	{
-		printf("Heap uzerinde yeterli alan tahsis edildi.\n");
-	}
+	/*
+		Heap'den tahsis edilen alana disk uzerindeki dosyayi kopyala.
+	*/
+	LPDWORD NumberOfBytesRead = 0;
 
-	DWORD numberOfBytesRead;
-
-	if (ReadFile(HFile, allocatedMemAddr, fileSize, &numberOfBytesRead, NULL) == FALSE)
-	{
-		printf("Dosyadan okuma yapilamadi!\n");
-		exit(EXIT_FAILURE);
-	}
-	else
-	{
-		printf("Heap uzerinde tahsis edilen alana %d byte aktarildi\n", numberOfBytesRead);
-	}
-
-	PIMAGE_DOS_HEADER DOSHeader = (PIMAGE_DOS_HEADER)allocatedMemAddr;
-	PIMAGE_NT_HEADERS NTHeader = (PIMAGE_NT_HEADERS)((DWORD)allocatedMemAddr + DOSHeader->e_lfanew);
-	DWORD ImageSize = NTHeader->OptionalHeader.SizeOfImage;
-	//unmapped
-	if (CreateProcessA(
-		NULL,
-		"c:\\windows\\syswow64\\notepad.exe",
-		NULL,
-		NULL,
-		TRUE,
-		4,
-		NULL,
-		NULL,
-		&si, &pi) == 0) {
-		printf("Process olusturulamadi!\n");
-		exit(EXIT_FAILURE);
-	}
-	else
-	{
-		printf("pid number: %d\n", pi.dwProcessId);
-	};
-	
-	typedef NTSTATUS(NTAPI* NtQueryInformationProcessPtr)(
-		IN HANDLE ProcessHandle,
-		IN PROCESSINFOCLASS ProcessInformationClass,
-		OUT PVOID ProcessInformation,
-		IN ULONG ProcessInformationLength,
-		OUT PULONG ReturnLength OPTIONAL);
-
-	PROCESS_BASIC_INFORMATION status;
-
-	HMODULE Hntdll = LoadLibraryA("ntdll.dll");
-
-	NtQueryInformationProcessPtr NtQueryInformationProcess = (NtQueryInformationProcessPtr)GetProcAddress(Hntdll, "NtQueryInformationProcess");
-	DWORD returnLenght = 0;
-
-	NtQueryInformationProcess(
-		pi.hProcess, 
-		ProcessBasicInformation, 
-		&status, 
-		sizeof(PROCESS_BASIC_INFORMATION), 
-		&returnLenght);
-	
-	DWORD_PTR pebaddr = (DWORD)status.PebBaseAddress + 8;
-	int a = 5;
-	HANDLE HtargetProc = pi.hProcess;
-	DWORD targetImageBaseAddress = NULL;
-
-	ReadProcessMemory(
-		HtargetProc, 
-		(LPCVOID)pebaddr, 
-		&targetImageBaseAddress, 
-		4, 
-		&returnLenght);
-
-	printf("Target Image Base Address: %p\n", targetImageBaseAddress);
-
-	typedef NTSTATUS(NTAPI* NtUnmapViewOfSectionPtr)(
-		IN HANDLE               ProcessHandle,
-		IN PVOID                BaseAddress
-		);
-	
-	NtUnmapViewOfSectionPtr NtUnmapViewOfSection = (NtUnmapViewOfSectionPtr)GetProcAddress(Hntdll, "NtUnmapViewOfSection");
-
-	NtUnmapViewOfSection(HtargetProc, targetImageBaseAddress);
-
-	VirtualAllocEx(
-		HtargetProc, 
-		(LPVOID)targetImageBaseAddress, 
-		ImageSize, 
-		MEM_COMMIT | MEM_RESERVE,  // 111111111111111111111 111111111111111111111111
-		PAGE_EXECUTE_READWRITE);
-
-
-	WriteProcessMemory(
-		HtargetProc, 
-		(LPVOID)targetImageBaseAddress, 
-		(LPCVOID)allocatedMemAddr, 
-		NTHeader->OptionalHeader.SizeOfHeaders, 
+	ReadFile(
+		HFile, 
+		baseAddr, 
+		fileSize, 
+		NumberOfBytesRead, 
 		NULL);
 
-	PIMAGE_SECTION_HEADER SECTIONHeader = (PIMAGE_SECTION_HEADER)((DWORD)allocatedMemAddr + DOSHeader->e_lfanew + sizeof(IMAGE_NT_HEADERS32));
-	PIMAGE_SECTION_HEADER oldSECTIONHeader = SECTIONHeader;
-	
-	
-	for (WORD i = 0; i < NTHeader->FileHeader.NumberOfSections; i++) {
-		DWORD destSectionLocation = targetImageBaseAddress + SECTIONHeader->VirtualAddress,
-			sourceSectionLocation = (DWORD)allocatedMemAddr + SECTIONHeader->PointerToRawData,
-			NumberOfBytesWritten = 0;
-		
-		WriteProcessMemory(
-			HtargetProc, 
-			(LPVOID)destSectionLocation, 
-			(LPCVOID)sourceSectionLocation, 
-			SECTIONHeader->SizeOfRawData, 
-			&NumberOfBytesWritten);
+	/*
+		Durdurulmus (SUSPENDED) modda yeni bir process baslat ve process bilgilerini(pi) al.
+	*/
 
-		//printf("Raw Size: %x\n", SECTIONHeader->SizeOfRawData);
-		SECTIONHeader++;
+	STARTUPINFO si;
+	PROCESS_INFORMATION pi;
+
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	ZeroMemory(&pi, sizeof(pi));
+
+	// 32 bit process olusturursan ImageBaseAddress Peb'de +8, 64 bit olusturursan +10 da yer alir.
+	if (!CreateProcessA(
+		NULL,
+		(LPSTR)"c:\\windows\\syswow64\\notepad.exe",
+		NULL,
+		NULL,
+		FALSE,
+		CREATE_SUSPENDED,
+		NULL,
+		NULL,
+		&si,
+		&pi )
+	)
+	{
+		printf("CreateProcess failed.");
+		exit(EXIT_FAILURE);
 	}
 
-	SECTIONHeader = oldSECTIONHeader;
+	/*
+		Gerekli fonksiyonlari yukle.
+	*/
+	HANDLE HTargetProcess = pi.hProcess;
+	DWORD targetProcessId = pi.dwProcessId;
 
-	DWORD delta = (DWORD)targetImageBaseAddress - NTHeader->OptionalHeader.ImageBase;
+	printf("Hedef process id: %d\n", targetProcessId);
 
-	for (int i = 0; i < NTHeader->FileHeader.NumberOfSections; i++) {
-		if ((strcmp(&SECTIONHeader->Name, ".reloc")) != 0) {
-			SECTIONHeader++;
-			continue;
+	PNtQueryInformationProcess NtQueryInformationProcess = GetProcAddress(LoadLibraryA((LPCSTR)"ntdll.dll"), (LPCSTR)"NtQueryInformationProcess");
+	PNtUnmapViewOfSection NtUnmapViewOfSection = GetProcAddress(LoadLibraryA((LPCSTR)"ntdll.dll"), (LPCSTR)"NtUnmapViewOfSection");
+
+	/*
+		Hedef process'in Image Base adresini bul.
+	*/
+	PROCESS_BASIC_INFORMATION pbi;
+
+	NtQueryInformationProcess(
+		HTargetProcess, 
+		ProcessBasicInformation, 
+		&pbi, 
+		sizeof(PROCESS_BASIC_INFORMATION), 
+		NULL);
+
+	PPEB PebBaseAddress = pbi.PebBaseAddress;
+	DWORD targetImageBaseAddr = (DWORD)PebBaseAddress + 8;
+	
+	ReadProcessMemory(
+		HTargetProcess, 
+		(LPCVOID)(targetImageBaseAddr), 
+		&targetImageBaseAddr, 
+		4, 
+		NULL);
+	
+	printf("Hedef Image Base Adresi: %p\n", targetImageBaseAddr);
+
+	/*
+		Hedef process'in Virtual Address Space'inden internal memory object'ini sil.
+		Ayrinti icin : https://stackoverflow.com/questions/53344161/why-does-zwunmapviewofsection-unmap-the-memory-of-the-whole-process-when-give
+	*/
+
+	NtUnmapViewOfSection(
+		HTargetProcess, 
+		(PVOID)targetImageBaseAddr);
+
+	/*
+		Image boyutunu al.
+	*/
+	PIMAGE_DOS_HEADER DOSHeader = (PIMAGE_DOS_HEADER)baseAddr;
+	PIMAGE_NT_HEADERS NTHeader = (PIMAGE_NT_HEADERS)((DWORD)baseAddr + DOSHeader->e_lfanew);
+	
+	DWORD imageSize = NTHeader->OptionalHeader.SizeOfImage;
+
+	/*
+		Unmapped edilmis bolgeyi tahsis et. 
+	*/
+	VirtualAllocEx(
+		HTargetProcess, 
+		(LPVOID)targetImageBaseAddr, 
+		imageSize, 
+		MEM_COMMIT | MEM_RESERVE, 
+		PAGE_EXECUTE_READWRITE);
+
+	/*
+		Hedef process'de tahsis edilen alana yeni image base'i guncelleyerek sectionlar haric tum headerler kopyalanir.
+		Disk uzerindeki dosyanin image base'ini hedef process'in image base'ine guncellersek ve bu aradaki farki 
+		hesaplayip sabit adresleri guncellersek, zaten halihazirda hedefde var olan image base adrese kopyalama
+		islemi yapacagimiz icin adresler bu image base'e gore guncellenmis olacak ve threadi calistirdigimizda
+		sikinti cikmayacaktir.
+	*/
+
+	DWORD totalHeaderSize = NTHeader->OptionalHeader.SizeOfHeaders,
+		delta = targetImageBaseAddr - NTHeader->OptionalHeader.ImageBase,
+		numberOfBytesWritten = NULL;
+
+	NTHeader->OptionalHeader.ImageBase = targetImageBaseAddr;
+
+	if ((WriteProcessMemory(
+		HTargetProcess,
+		(LPVOID)targetImageBaseAddr,
+		(LPCVOID)baseAddr,
+		totalHeaderSize,
+		&numberOfBytesWritten )) == 0
+		)
+	{
+		printf("Headerlar hedefe yazilamadi.");
+		exit(EXIT_FAILURE);
+	}
+	else
+	{
+		printf("%d baytin %d'i hedefe yazildi.\n", totalHeaderSize, numberOfBytesWritten);
+	}
+
+	/*
+		Disk uzerindeki sectionlari hedefe su maddelere dikkat ederek yaz:
+			1-) Disk uzerinde bu sectionlar PointerToRawData offsetlerinde baslar
+			2-) Hedefe kopyalarken section alignment mevzusundan dolayi VirtualAddress'e
+			gore islem yapilmalidir.
+			NOT: VirtualAddressler image base'e gore referans alinmalidir (Microsoft dokumantasyonuna gore)
+	*/
+
+	PIMAGE_SECTION_HEADER SECTIONHeader = (PIMAGE_SECTION_HEADER)((DWORD)NTHeader + sizeof(IMAGE_NT_HEADERS));
+
+	PIMAGE_SECTION_HEADER oldSECTIONHeader = SECTIONHeader;
+
+
+	WORD numberOfSections = NTHeader->FileHeader.NumberOfSections;
+
+	DWORD sectionHeaderTableOffset = 0, numberOfBytesToRead = 0;
+
+	PIMAGE_BASE_RELOCATION relocTable = NULL;
+
+	for (WORD i = 0; i < numberOfSections; i++) {
+		SECTIONHeader = (PIMAGE_SECTION_HEADER)((DWORD)oldSECTIONHeader + sectionHeaderTableOffset);
+		//printf("Section Name: %s\n", SECTIONHeader->Name);
+		numberOfBytesToRead = SECTIONHeader->SizeOfRawData;
+		LPCVOID sectionBaseAddr = (LPCVOID)((DWORD)baseAddr + SECTIONHeader->PointerToRawData);
+		LPVOID destSectionBaseAddr = (LPVOID)((DWORD)targetImageBaseAddr + SECTIONHeader->VirtualAddress);
+
+		if ((strcmp(SECTIONHeader->Name, ".reloc") == 0))
+		{
+			relocTable = (PIMAGE_BASE_RELOCATION)sectionBaseAddr;
 		}
-		PIMAGE_BASE_RELOCATION baseRelocTable = (PIMAGE_BASE_RELOCATION)((DWORD)allocatedMemAddr + SECTIONHeader->PointerToRawData);
-		int k = 1;
+		
+		if ((WriteProcessMemory(
+			HTargetProcess,
+			destSectionBaseAddr,
+			sectionBaseAddr,
+			numberOfBytesToRead,
+			&numberOfBytesWritten)) == 0
+			)
+		{
+			printf("%s section'i hedefe yazilamadi.", SECTIONHeader->Name);
+			exit(EXIT_FAILURE);
+		}
+		else
+		{
+			printf("%s section'in %d baytinin %d'si hedefe yazildi.\n", SECTIONHeader->Name, SECTIONHeader->SizeOfRawData, numberOfBytesWritten);
+		}
 
-		while (baseRelocTable->SizeOfBlock > 0) {
-			
-			DWORD numberOfEntry = (baseRelocTable->SizeOfBlock - 8) / sizeof(WORD);
+		sectionHeaderTableOffset += sizeof(IMAGE_SECTION_HEADER);
+	}
 
-			printf("%d.Block Size: %x and has %x entries\n", k, baseRelocTable->SizeOfBlock, numberOfEntry);
+	/*
+		Sabit Adresleri guncelle
+	*/
+	DWORD
+		relocTableRVA = NTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress,
+		relocTableSize = NTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size,
+		relocTableEntryOffset = sizeof(IMAGE_BASE_RELOCATION),
+		PageRVA, numberOfEntries, relocTableOffset = PageRVA = numberOfEntries = 0;
+		
 
-			LPWORD entryList = (LPWORD)((DWORD)baseRelocTable + sizeof(IMAGE_BASE_RELOCATION));
+	const WORD 
+			first4bit = 0xF000,  // 1111000000000000
+			last12bit = 0xFFF; // 0000111111111111
+	
+	WORD TYPE, OFFSET;
+	LPWORD ENTRY;
+	
+	if (relocTable && delta)
+	{
+		while (relocTableOffset != relocTableSize)
+		{
+			relocTableOffset += relocTable->SizeOfBlock;
+			PageRVA = relocTable->VirtualAddress;
+			relocTableEntryOffset = sizeof(DWORD) * 2,
 
-			for (DWORD j = 0; j < numberOfEntry; j++) {
-				int offset = entryList[j] & 0x0fff;
-				printf("\t%d.Offset: %x\n", j + 1, offset);
-				DWORD buff = 0;
-				ReadProcessMemory(
-					HtargetProc,
-					(LPVOID)((DWORD)targetImageBaseAddress + NTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress),
-					&buff, sizeof(WORD) ,NULL);
-				int* p = &buff;
-				*p += delta;
-				// VirtualAddr RVA
-				
+			numberOfEntries = (relocTable->SizeOfBlock - 8) / sizeof(WORD);
+			ENTRY = (LPWORD)((DWORD)relocTable + relocTableEntryOffset);
+
+			for (int i = 1; i < numberOfEntries+1; i++)
+			{
+				relocTableEntryOffset = sizeof(WORD);
+				TYPE = *ENTRY & first4bit;
+				OFFSET = *ENTRY & last12bit;
+
+				if (TYPE)
+					printf("type:%x\toffset:%x\n", TYPE, OFFSET);
+
+				ENTRY = (LPWORD)((DWORD)relocTable + relocTableEntryOffset * i);
 			}
 
-			baseRelocTable = (PIMAGE_BASE_RELOCATION)((DWORD)baseRelocTable + baseRelocTable->SizeOfBlock);
-			k++;
+			// Bir sonraki bloga gec.
+			relocTable = (DWORD)relocTable + relocTable->SizeOfBlock;
 		}
 		
 	}
-	
-	
-}
+} 
